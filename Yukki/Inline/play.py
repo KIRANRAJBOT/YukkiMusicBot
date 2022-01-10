@@ -1,301 +1,273 @@
-from pyrogram.types import (CallbackQuery, InlineKeyboardButton,
-                            InlineKeyboardMarkup, InputMediaPhoto, Message)
+# Copyright (C) 2021 By Veez Music-Project
+# Commit Start Date 20/10/2021
+# Finished On 28/10/2021
 
-from Yukki import db_mem
+import re
+import asyncio
+
+from config import ASSISTANT_NAME, BOT_USERNAME, IMG_1, IMG_2
+from driver.design.thumbnail import thumb
+from driver.design.chatname import CHAT_TITLE
+from driver.filters import command, other_filters
+from driver.queues import QUEUE, add_to_queue
+from driver.veez import call_py, user
+from driver.utils import bash
+from pyrogram import Client
+from pyrogram.errors import UserAlreadyParticipant, UserNotParticipant
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pytgcalls import StreamType
+from pytgcalls.types.input_stream import AudioPiped
+from youtubesearchpython import VideosSearch
 
 
-def url_markup(videoid, duration, user_id, query, query_type):
-    buttons = [
+def ytsearch(query: str):
+    try:
+        search = VideosSearch(query, limit=1).result()
+        data = search["result"][0]
+        songname = data["title"]
+        url = data["link"]
+        duration = data["duration"]
+        thumbnail = f"https://i.ytimg.com/vi/{data['id']}/hqdefault.jpg"
+        return [songname, url, duration, thumbnail]
+    except Exception as e:
+        print(e)
+        return 0
+
+
+async def ytdl(format: str, link: str):
+    stdout, stderr = await bash(f'youtube-dl -g -f "{format}" {link}')
+    if stdout:
+        return 1, stdout.split("\n")[0]
+    return 0, stderr
+
+
+@Client.on_message(command(["play", f"play@{BOT_USERNAME}"]) & other_filters)
+async def play(c: Client, m: Message):
+    await m.delete()
+    replied = m.reply_to_message
+    chat_id = m.chat.id
+    keyboard = InlineKeyboardMarkup(
         [
-            InlineKeyboardButton(
-                text="❮",
-                callback_data=f"slider B|{query_type}|{query}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="🎵",
-                callback_data=f"MusicStream {videoid}|{duration}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="🎥",
-                callback_data=f"Choose {videoid}|{duration}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="❯",
-                callback_data=f"slider F|{query_type}|{query}|{user_id}",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🔎 More Results",
-                callback_data=f"Search {query}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="🗑 Close Search",
-                callback_data=f"forceclose {query}|{user_id}",
-            ),
-        ],
-    ]
-    return buttons
-
-
-def url_markup2(videoid, duration, user_id):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text="🎵 Play Music",
-                callback_data=f"MusicStream {videoid}|{duration}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="🎥 Play Video",
-                callback_data=f"Choose {videoid}|{duration}|{user_id}",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🗑 Close Search",
-                callback_data=f"forceclose {videoid}|{user_id}",
+            [
+                InlineKeyboardButton(text="• Mᴇɴᴜ", callback_data="cbmenu"),
+                InlineKeyboardButton(text="• Cʟᴏsᴇ", callback_data="cls"),
+            ]
+        ]
+    )
+    if m.sender_chat:
+        return await m.reply_text("you're an __Anonymous__ Admin !\n\n» revert back to user account from admin rights.")
+    try:
+        aing = await c.get_me()
+    except Exception as e:
+        return await m.reply_text(f"error:\n\n{e}")
+    a = await c.get_chat_member(chat_id, aing.id)
+    if a.status != "administrator":
+        await m.reply_text(
+            f"💡 To use me, I need to be an **Administrator** with the following **permissions**:\n\n» ❌ __Delete messages__\n» ❌ __Add users__\n» ❌ __Manage video chat__\n\nData is **updated** automatically after you **promote me**"
+        )
+        return
+    if not a.can_manage_voice_chats:
+        await m.reply_text(
+            "missing required permission:" + "\n\n» ❌ __Manage video chat__"
+        )
+        return
+    if not a.can_delete_messages:
+        await m.reply_text(
+            "missing required permission:" + "\n\n» ❌ __Delete messages__"
+        )
+        return
+    if not a.can_invite_users:
+        await m.reply_text("missing required permission:" + "\n\n» ❌ __Add users__")
+        return
+    try:
+        ubot = (await user.get_me()).id
+        b = await c.get_chat_member(chat_id, ubot)
+        if b.status == "kicked":
+            await m.reply_text(
+                f"@{ASSISTANT_NAME} **is banned in group** {m.chat.title}\n\n» **unban the userbot first if you want to use this bot.**"
             )
-        ],
-    ]
-    return buttons
+            return
+    except UserNotParticipant:
+        if m.chat.username:
+            try:
+                await user.join_chat(m.chat.username)
+            except Exception as e:
+                await m.reply_text(f"❌ **userbot failed to join**\n\n**reason**: `{e}`")
+                return
+        else:
+            try:
+                invitelink = await c.export_chat_invite_link(
+                    m.chat.id
+                )
+                if invitelink.startswith("https://t.me/+"):
+                    invitelink = invitelink.replace(
+                        "https://t.me/+", "https://t.me/joinchat/"
+                    )
+                await user.join_chat(invitelink)
+            except UserAlreadyParticipant:
+                pass
+            except Exception as e:
+                return await m.reply_text(
+                    f"❌ **userbot failed to join**\n\n**reason**: `{e}`"
+                )
+    if replied:
+        if replied.audio or replied.voice:
+            suhu = await replied.reply("📥 **downloading audio...**")
+            dl = await replied.download()
+            link = replied.link
+            if replied.audio:
+                if replied.audio.title:
+                    songname = replied.audio.title[:70]
+                else:
+                    if replied.audio.file_name:
+                        songname = replied.audio.file_name[:70]
+                    else:
+                        songname = "Audio"
+            elif replied.voice:
+                songname = "Voice Note"
+            if chat_id in QUEUE:
+                pos = add_to_queue(chat_id, songname, dl, link, "Audio", 0)
+                await suhu.delete()
+                await m.reply_photo(
+                    photo=f"{IMG_1}",
+                    caption=f"💡 **Track added to queue »** `{pos}`\n\n🏷 **Name:** [{songname}]({link}) | `music`\n💭 **Chat:** `{chat_id}`\n🎧 **Request by:** {m.from_user.mention()}",
+                    reply_markup=keyboard,
+                )
+            else:
+             try:
+                await suhu.edit("🔄 **Joining vc...**")
+                await call_py.join_group_call(
+                    chat_id,
+                    AudioPiped(
+                        dl,
+                    ),
+                    stream_type=StreamType().local_stream,
+                )
+                add_to_queue(chat_id, songname, dl, link, "Audio", 0)
+                await suhu.delete()
+                requester = f"[{m.from_user.first_name}](tg://user?id={m.from_user.id})"
+                await m.reply_photo(
+                    photo=f"{IMG_2}",
+                    caption=f"🏷 **Name:** [{songname}]({link})\n💭 **Chat:** `{chat_id}`\n💡 **Status:** `Playing`\n🎧 **Request by:** {requester}\n📹 **Stream type:** `Music`",
+                    reply_markup=keyboard,
+                )
+             except Exception as e:
+                await suhu.delete()
+                await m.reply_text(f"🚫 error:\n\n» {e}")
+        else:
+            if len(m.command) < 2:
+                await m.reply(
+                    "» reply to an **audio file** or **give something to search.**"
+                )
+            else:
+                suhu = await c.send_message(chat_id, "🔍 **Searching...**")
+                query = m.text.split(None, 1)[1]
+                search = ytsearch(query)
+                if search == 0:
+                    await suhu.edit("❌ **no results found.**")
+                else:
+                    songname = search[0]
+                    title = search[0]
+                    url = search[1]
+                    duration = search[2]
+                    thumbnail = search[3]
+                    userid = m.from_user.id
+                    gcname = m.chat.title
+                    ctitle = await CHAT_TITLE(gcname)
+                    image = await thumb(thumbnail, title, userid, ctitle)
+                    format = "bestaudio[ext=m4a]"
+                    veez, ytlink = await ytdl(format, url)
+                    if veez == 0:
+                        await suhu.edit(f"❌ yt-dl issues detected\n\n» `{ytlink}`")
+                    else:
+                        if chat_id in QUEUE:
+                            pos = add_to_queue(
+                                chat_id, songname, ytlink, url, "Audio", 0
+                            )
+                            await suhu.delete()
+                            requester = f"[{m.from_user.first_name}](tg://user?id={m.from_user.id})"
+                            await m.reply_photo(
+                                photo=image,
+                                caption=f"💡 **Track added to queue »** `{pos}`\n\n🏷 **Name:** [{songname}]({url}) | `music`\n**⏱ Duration:** `{duration}`\n🎧 **Request by:** {requester}",
+                                reply_markup=keyboard,
+                            )
+                        else:
+                            try:
+                                await suhu.edit("🔄 **Joining vc...**")
+                                await call_py.join_group_call(
+                                    chat_id,
+                                    AudioPiped(
+                                        ytlink,
+                                    ),
+                                    stream_type=StreamType().local_stream,
+                                )
+                                add_to_queue(chat_id, songname, ytlink, url, "Audio", 0)
+                                await suhu.delete()
+                                requester = f"[{m.from_user.first_name}](tg://user?id={m.from_user.id})"
+                                await m.reply_photo(
+                                    photo=image,
+                                    caption=f"🏷 **Name:** [{songname}]({url})\n**⏱ Duration:** `{duration}`\n💡 **Status:** `Playing`\n🎧 **Request by:** {requester}\n📹 **Stream type:** `Music`",
+                                    reply_markup=keyboard,
+                                )
+                            except Exception as ep:
+                                await suhu.delete()
+                                await m.reply_text(f"🚫 error: `{ep}`")
 
-
-def search_markup(
-    ID1,
-    ID2,
-    ID3,
-    ID4,
-    ID5,
-    duration1,
-    duration2,
-    duration3,
-    duration4,
-    duration5,
-    user_id,
-    query,
-):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text="1️⃣", callback_data=f"Yukki {ID1}|{duration1}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="2️⃣", callback_data=f"Yukki {ID2}|{duration2}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="3️⃣", callback_data=f"Yukki {ID3}|{duration3}|{user_id}"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="4️⃣", callback_data=f"Yukki {ID4}|{duration4}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="5️⃣", callback_data=f"Yukki {ID5}|{duration5}|{user_id}"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="<", callback_data=f"popat 1|{query}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="🗑 Close", callback_data=f"forceclose {query}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text=">", callback_data=f"popat 1|{query}|{user_id}"
-            ),
-        ],
-    ]
-    return buttons
-
-
-def search_markup2(
-    ID6,
-    ID7,
-    ID8,
-    ID9,
-    ID10,
-    duration6,
-    duration7,
-    duration8,
-    duration9,
-    duration10,
-    user_id,
-    query,
-):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text="6️⃣",
-                callback_data=f"Yukki {ID6}|{duration6}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="7️⃣",
-                callback_data=f"Yukki {ID7}|{duration7}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="8️⃣",
-                callback_data=f"Yukki {ID8}|{duration8}|{user_id}",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="9️⃣",
-                callback_data=f"Yukki {ID9}|{duration9}|{user_id}",
-            ),
-            InlineKeyboardButton(
-                text="🔟",
-                callback_data=f"Yukki {ID10}|{duration10}|{user_id}",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                text="<", callback_data=f"popat 2|{query}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text="🗑 Close", callback_data=f"forceclose {query}|{user_id}"
-            ),
-            InlineKeyboardButton(
-                text=">", callback_data=f"popat 2|{query}|{user_id}"
-            ),
-        ],
-    ]
-    return buttons
-
-
-def secondary_markup(videoid, user_id):
-    buttons = [
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🔗 More Menu", callback_data=f"other {videoid}|{user_id}"
-            ),
-            InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close"),
-        ],
-    ]
-    return buttons
-
-
-def secondary_markup2(videoid, user_id):
-    buttons = [
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [
-            InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close"),
-        ],
-    ]
-    return buttons
-
-
-def primary_markup(videoid, user_id, current_time, total_time):
-    if videoid not in db_mem:
-        db_mem[videoid] = {}
-    db_mem[videoid]["check"] = 2
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text=f"{total_time} ------------------ {current_time}",
-                callback_data=f"timer_checkup_markup {videoid}|{user_id}",
+    else:
+        if len(m.command) < 2:
+            await m.reply(
+                "» reply to an **audio file** or **give something to search.**"
             )
-        ],
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🔗 More Menu", callback_data=f"other {videoid}|{user_id}"
-            ),
-            InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close"),
-        ],
-    ]
-    return buttons
-
-
-def timer_markup(videoid, user_id, current_time, total_time):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text=f"{total_time} ------------------ {current_time}",
-                callback_data=f"timer_checkup_markup {videoid}|{user_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [
-            InlineKeyboardButton(
-                text="🔗 More Menu", callback_data=f"other {videoid}|{user_id}"
-            ),
-            InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close"),
-        ],
-    ]
-    return buttons
-
-
-def audio_markup(videoid, user_id, current_time, total_time):
-    if videoid not in db_mem:
-        db_mem[videoid] = {}
-    db_mem[videoid]["check"] = 2
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text=f"{total_time} ------------------ {current_time}",
-                callback_data=f"timer_checkup_markup {videoid}|{user_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close")],
-    ]
-    return buttons
-
-
-def audio_timer_markup_start(videoid, user_id, current_time, total_time):
-    buttons = [
-        [
-            InlineKeyboardButton(
-                text=f"{total_time} ------------------ {current_time}",
-                callback_data=f"timer_checkup_markup {videoid}|{user_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [InlineKeyboardButton(text="🗑 Close Menu", callback_data=f"close")],
-    ]
-    return buttons
-
-
-audio_markup2 = InlineKeyboardMarkup(
-    [
-        [
-            InlineKeyboardButton(text="▶️", callback_data=f"resumecb"),
-            InlineKeyboardButton(text="⏸️", callback_data=f"pausecb"),
-            InlineKeyboardButton(text="⏭️", callback_data=f"skipcb"),
-            InlineKeyboardButton(text="⏹️", callback_data=f"stopcb"),
-        ],
-        [InlineKeyboardButton("🗑 Close Menu", callback_data="close")],
-    ]
-)
+        else:
+            suhu = await c.send_message(chat_id, "🔍 **Searching...**")
+            query = m.text.split(None, 1)[1]
+            search = ytsearch(query)
+            if search == 0:
+                await suhu.edit("❌ **no results found.**")
+            else:
+                songname = search[0]
+                title = search[0]
+                url = search[1]
+                duration = search[2]
+                thumbnail = search[3]
+                userid = m.from_user.id
+                gcname = m.chat.title
+                ctitle = await CHAT_TITLE(gcname)
+                image = await thumb(thumbnail, title, userid, ctitle)
+                format = "bestaudio[ext=m4a]"
+                veez, ytlink = await ytdl(format, url)
+                if veez == 0:
+                    await suhu.edit(f"❌ yt-dl issues detected\n\n» `{ytlink}`")
+                else:
+                    if chat_id in QUEUE:
+                        pos = add_to_queue(chat_id, songname, ytlink, url, "Audio", 0)
+                        await suhu.delete()
+                        requester = (
+                            f"[{m.from_user.first_name}](tg://user?id={m.from_user.id})"
+                        )
+                        await m.reply_photo(
+                            photo=image,
+                            caption=f"💡 **Track added to queue »** `{pos}`\n\n🏷 **Name:** [{songname}]({url}) | `music`\n**⏱ Duration:** `{duration}`\n🎧 **Request by:** {requester}",
+                            reply_markup=keyboard,
+                        )
+                    else:
+                        try:
+                            await suhu.edit("🔄 **Joining vc...**")
+                            await call_py.join_group_call(
+                                chat_id,
+                                AudioPiped(
+                                    ytlink,
+                                ),
+                                stream_type=StreamType().local_stream,
+                            )
+                            add_to_queue(chat_id, songname, ytlink, url, "Audio", 0)
+                            await suhu.delete()
+                            requester = f"[{m.from_user.first_name}](tg://user?id={m.from_user.id})"
+                            await m.reply_photo(
+                                photo=image,
+                                caption=f"🏷 **Name:** [{songname}]({url})\n**⏱ Duration:** `{duration}`\n💡 **Status:** `Playing`\n🎧 **Request by:** {requester}\n📹 **Stream type:** `Music`",
+                                reply_markup=keyboard,
+                            )
+                        except Exception as ep:
+                            await suhu.delete()
+                            await m.reply_text(f"🚫 error: `{ep}`")
